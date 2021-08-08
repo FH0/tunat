@@ -1,7 +1,7 @@
 package tun
 
 import (
-	"log"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -23,15 +23,27 @@ type Tun struct {
 
 func New(
 	name string,
+	socketFile string,
 	tcpRedirect4 *net.TCPAddr, // can't be the end of network because fakeSrcAddr is the next addr
 	tcpRedirect6 *net.TCPAddr, // can't be the end of network because fakeSrcAddr is the next addr
 	bufLen int,
 	udpChanCapacity int,
 ) (*Tun, <-chan UDPData, error) {
-	// tunAlloc
-	file, err := tunAlloc(name)
-	if err != nil {
-		return nil, nil, err
+	// file
+	var (
+		file *os.File
+		err  error
+	)
+	if name != "" {
+		file, err = tunAlloc(name)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		file, err = readSocketFile(socketFile)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	// fakeSrcAddr
@@ -69,7 +81,7 @@ func (t *Tun) start() {
 		buf := make([]byte, t.bufLen) // in loop because udpChan need
 		nread, err := t.file.Read(buf)
 		if err != nil {
-			log.Fatal(err)
+			fmt.Printf("tunat read error: %v\n", err)
 			return
 		}
 

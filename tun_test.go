@@ -1,10 +1,12 @@
 package tun
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"reflect"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -19,6 +21,7 @@ go test -run ^TestAll$ tunat -count=1 -cover -v
 func TestAll(t *testing.T) {
 	tun, udpRx, err := New(
 		"tun1",
+		"",
 		&net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 100},
 		&net.TCPAddr{IP: net.ParseIP("fd::1"), Port: 100},
 		65535,
@@ -30,6 +33,7 @@ func TestAll(t *testing.T) {
 	testUDPWrite(tun, udpRx)
 	testUDPRead(tun, udpRx)
 	testTCP(tun, udpRx)
+	testSocketFile(tun)
 }
 
 func testUDPWrite(tun *Tun, udpRx <-chan UDPData) {
@@ -144,4 +148,61 @@ func testTCP(tun *Tun, udpRx <-chan UDPData) {
 	if flag == 1 {
 		panic("map has element")
 	}
+}
+
+func testSocketFile(tun *Tun) {
+	tun.file.Close()
+
+	socketFile := "/tmp/tunSocket"
+
+	// send fd background
+	go func() {
+		file, err := tunAlloc("tun1")
+		if err != nil {
+			panic(err)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+
+		unixConn, err := net.DialUnix("unix", nil, &net.UnixAddr{
+			Name: socketFile,
+			Net:  "unix",
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		oob := syscall.UnixRights(int(file.Fd()))
+		_, _, err = unixConn.WriteMsgUnix([]byte("/dev/net/tun"), oob, nil)
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	// recv fd
+	file, err := readSocketFile(socketFile)
+	if err != nil {
+		panic(err)
+	}
+
+	// send packet to tun background
+	go func() {
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 100})
+		if err != nil {
+			panic(err)
+		}
+
+		_, err = conn.WriteTo([]byte("abcd"), &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 100})
+		if err != nil {
+			panic(err)
+		}
+	}()
+
+	// read tun
+	buf := make([]byte, 65535)
+	nread, err := file.Read(buf)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(hex.EncodeToString(buf[:nread]))
 }
