@@ -1,4 +1,4 @@
-package tun
+package tunat
 
 import (
 	"net"
@@ -7,7 +7,8 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func (t *Tun) WriteTo(srcAddr *net.UDPAddr, payload []byte, dstAddr *net.UDPAddr) (int, error) {
+// WriteTo send udp data with tun
+func (t *Tunat) WriteTo(srcAddr *net.UDPAddr, payload []byte, dstAddr *net.UDPAddr) (int, error) {
 	// udpHeader
 	udpHeader := &layers.UDP{
 		SrcPort: layers.UDPPort(srcAddr.Port),
@@ -56,7 +57,7 @@ func (t *Tun) WriteTo(srcAddr *net.UDPAddr, payload []byte, dstAddr *net.UDPAddr
 	return t.file.Write(buf.Bytes())
 }
 
-func (t *Tun) handleUDP(networkLayer gopacket.NetworkLayer, udpLayer *layers.UDP) {
+func (t *Tunat) handleUDP(networkLayer gopacket.NetworkLayer, udpLayer *layers.UDP) {
 	t.udpTx <- UDPData{
 		SrcAddr: &net.UDPAddr{
 			IP:   networkLayer.NetworkFlow().Src().Raw(),
@@ -72,6 +73,7 @@ func (t *Tun) handleUDP(networkLayer gopacket.NetworkLayer, udpLayer *layers.UDP
 	}
 }
 
+// UDPData used in channel
 type UDPData struct {
 	SrcAddr net.Addr
 	Data    []byte

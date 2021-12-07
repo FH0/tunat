@@ -1,4 +1,4 @@
-package tun
+package tunat
 
 import (
 	"errors"

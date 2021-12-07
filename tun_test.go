@@ -1,4 +1,4 @@
-package tun
+package tunat
 
 import (
 	"encoding/hex"
@@ -36,7 +36,7 @@ func TestAll(t *testing.T) {
 	testSocketFile(tun)
 }
 
-func testUDPWrite(tun *Tun, udpRx <-chan UDPData) {
+func testUDPWrite(tun *Tunat, udpRx <-chan UDPData) {
 	udpListener, _ := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("[::]"),
 		Port: 100,
@@ -79,7 +79,7 @@ func testUDPWrite(tun *Tun, udpRx <-chan UDPData) {
 	}
 }
 
-func testUDPRead(tun *Tun, udpRx <-chan UDPData) {
+func testUDPRead(tun *Tunat, udpRx <-chan UDPData) {
 	udpListener, _ := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("[::]"),
 		Port: 100,
@@ -107,7 +107,7 @@ func testUDPRead(tun *Tun, udpRx <-chan UDPData) {
 	fmt.Println(<-udpRx)
 }
 
-func testTCP(tun *Tun, udpRx <-chan UDPData) {
+func testTCP(tun *Tunat, udpRx <-chan UDPData) {
 	tcpListener, _ := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("[::]"), Port: 100})
 	defer tcpListener.Close()
 
@@ -129,7 +129,7 @@ func testTCP(tun *Tun, udpRx <-chan UDPData) {
 
 	for i := 0; i < 2; i++ {
 		conn, _ := tcpListener.Accept()
-		originSrcAddr, originDstAddr := tun.GetOriginSrcDst(conn.RemoteAddr().(*net.TCPAddr))
+		originSrcAddr, originDstAddr := tun.GetDst(conn.RemoteAddr().(*net.TCPAddr))
 		fmt.Printf("%v -> %v   %v -> %v\n", conn.RemoteAddr(), conn.LocalAddr(), originSrcAddr, originDstAddr)
 
 		// test map
@@ -139,7 +139,7 @@ func testTCP(tun *Tun, udpRx <-chan UDPData) {
 	}
 
 	// test map
-	var flag uint32 = 0
+	var flag uint32
 	tun.tcpMap.Range(func(key, value interface{}) bool {
 		atomic.StoreUint32(&flag, 1)
 		fmt.Println(key.(string), value.(*tcpValue).natAddr, value.(*tcpValue).dstAddr)
@@ -150,7 +150,7 @@ func testTCP(tun *Tun, udpRx <-chan UDPData) {
 	}
 }
 
-func testSocketFile(tun *Tun) {
+func testSocketFile(tun *Tunat) {
 	tun.file.Close()
 
 	socketFile := "/tmp/tunSocket"

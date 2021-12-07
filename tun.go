@@ -1,4 +1,4 @@
-package tun
+package tunat
 
 import (
 	"fmt"
@@ -10,7 +10,8 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-type Tun struct {
+// Tunat main struct
+type Tunat struct {
 	file         *os.File
 	tcpRedirect4 *net.TCPAddr
 	tcpRedirect6 *net.TCPAddr
@@ -21,6 +22,7 @@ type Tun struct {
 	udpTx        chan<- UDPData
 }
 
+// New create a Tunat
 func New(
 	name string,
 	socketFile string,
@@ -28,7 +30,7 @@ func New(
 	tcpRedirect6 *net.TCPAddr, // can't be the end of network because fakeSrcAddr is the next addr
 	bufLen int,
 	udpChanCapacity int,
-) (*Tun, <-chan UDPData, error) {
+) (*Tunat, <-chan UDPData, error) {
 	// file
 	var (
 		file *os.File
@@ -50,17 +52,17 @@ func New(
 	var fakeSrcAddr4 net.IP
 	if tcpRedirect4 != nil {
 		fakeSrcAddr4 = append([]byte(nil), tcpRedirect4.IP...)
-		fakeSrcAddr4[len(tcpRedirect4.IP)-1] += 1
+		fakeSrcAddr4[len(tcpRedirect4.IP)-1]++
 	}
 	var fakeSrcAddr6 net.IP
 	if tcpRedirect6 != nil {
 		fakeSrcAddr6 = append([]byte(nil), tcpRedirect6.IP...)
-		fakeSrcAddr6[len(tcpRedirect6.IP)-1] += 1
+		fakeSrcAddr6[len(tcpRedirect6.IP)-1]++
 	}
 
 	// struct
 	udpChan := make(chan UDPData, udpChanCapacity)
-	tun := &Tun{
+	tun := &Tunat{
 		file:         file,
 		tcpRedirect4: tcpRedirect4,
 		tcpRedirect6: tcpRedirect6,
@@ -76,7 +78,7 @@ func New(
 	return tun, udpChan, nil
 }
 
-func (t *Tun) start() {
+func (t *Tunat) start() {
 	for {
 		buf := make([]byte, t.bufLen) // in loop because udpChan need
 		nread, err := t.file.Read(buf)

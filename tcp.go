@@ -1,4 +1,4 @@
-package tun
+package tunat
 
 import (
 	"net"
@@ -7,13 +7,13 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
-func (t *Tun) handleTCP(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) {
+func (t *Tunat) handleTCP(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) {
 	if tcpPacket := t.handleTCPPacket(networkLayer, tcp); tcpPacket != nil {
 		t.file.Write(tcpPacket)
 	}
 }
 
-func (t *Tun) handleTCPPacket(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) []byte {
+func (t *Tunat) handleTCPPacket(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) []byte {
 	// modify
 	var ipHeader gopacket.SerializableLayer
 	switch _ipHeader := networkLayer.(type) {
@@ -137,7 +137,8 @@ type tcpValue struct {
 	dstAddr *net.TCPAddr
 }
 
-func (t *Tun) GetOriginSrcDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
+// GetDst return address associated
+func (t *Tunat) GetDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
 	if value, ok := t.tcpMap.Load(addr.String()); ok {
 		return &value.(*tcpValue).natAddr, value.(*tcpValue).dstAddr
 	}
@@ -145,7 +146,8 @@ func (t *Tun) GetOriginSrcDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
 	return nil, nil
 }
 
-func (t *Tun) DelNat(addr *net.TCPAddr) {
+// DelNat delete address from map
+func (t *Tunat) DelNat(addr *net.TCPAddr) {
 	var natAddr *net.TCPAddr
 	if value, ok := t.tcpMap.Load(addr.String()); ok {
 		natAddr = &value.(*tcpValue).natAddr
