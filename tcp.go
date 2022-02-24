@@ -137,8 +137,8 @@ type tcpValue struct {
 	dstAddr *net.TCPAddr
 }
 
-// GetDst return address associated
-func (t *Tunat) GetDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
+// GetSrcDst return address associated
+func (t *Tunat) GetSrcDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
 	if value, ok := t.tcpMap.Load(addr.String()); ok {
 		return &value.(*tcpValue).natAddr, value.(*tcpValue).dstAddr
 	}

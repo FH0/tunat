@@ -75,7 +75,7 @@ func (t *Tunat) handleUDP(networkLayer gopacket.NetworkLayer, udpLayer *layers.U
 
 // UDPData used in channel
 type UDPData struct {
-	SrcAddr net.Addr
+	SrcAddr *net.UDPAddr
 	Data    []byte
-	DstAddr net.Addr
+	DstAddr *net.UDPAddr
 }

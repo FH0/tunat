@@ -12,6 +12,8 @@ import (
 
 // Tunat main struct
 type Tunat struct {
+	UDPRx <-chan UDPData
+
 	file         *os.File
 	tcpRedirect4 *net.TCPAddr
 	tcpRedirect6 *net.TCPAddr
@@ -30,7 +32,7 @@ func New(
 	tcpRedirect6 *net.TCPAddr, // can't be the end of network because fakeSrcAddr is the next addr
 	bufLen int,
 	udpChanCapacity int,
-) (*Tunat, <-chan UDPData, error) {
+) (Tunat, error) {
 	// file
 	var (
 		file *os.File
@@ -39,12 +41,12 @@ func New(
 	if name != "" {
 		file, err = tunAlloc(name)
 		if err != nil {
-			return nil, nil, err
+			return Tunat{}, err
 		}
 	} else {
 		file, err = readSocketFile(socketFile)
 		if err != nil {
-			return nil, nil, err
+			return Tunat{}, err
 		}
 	}
 
@@ -62,7 +64,7 @@ func New(
 
 	// struct
 	udpChan := make(chan UDPData, udpChanCapacity)
-	tun := &Tunat{
+	tunat := Tunat{
 		file:         file,
 		tcpRedirect4: tcpRedirect4,
 		tcpRedirect6: tcpRedirect6,
@@ -70,12 +72,13 @@ func New(
 		fakeSrcAddr6: fakeSrcAddr6,
 		bufLen:       bufLen,
 		udpTx:        udpChan,
+		UDPRx:        udpChan,
 	}
 
 	// background
-	go tun.start()
+	go tunat.start()
 
-	return tun, udpChan, nil
+	return tunat, nil
 }
 
 func (t *Tunat) start() {

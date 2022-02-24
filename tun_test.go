@@ -11,15 +11,18 @@ import (
 	"time"
 )
 
+var tunat Tunat
+
 /*
 ip tuntap add mode tun tun1
 ifconfig tun1 inet 10.0.0.1 netmask 255.255.255.0 up
 ifconfig tun1 inet6 add fd::1/120
 
-go test -run ^TestAll$ tunat -count=1 -cover -v
+go test -count=1 -cover -v
 */
-func TestAll(t *testing.T) {
-	tun, udpRx, err := New(
+func init() {
+	var err error
+	tunat, err = New(
 		"tun1",
 		"",
 		&net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 100},
@@ -29,14 +32,9 @@ func TestAll(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-
-	testUDPWrite(tun, udpRx)
-	testUDPRead(tun, udpRx)
-	testTCP(tun, udpRx)
-	testSocketFile(tun)
 }
 
-func testUDPWrite(tun *Tunat, udpRx <-chan UDPData) {
+func TestUDPWrite(t *testing.T) {
 	udpListener, _ := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("[::]"),
 		Port: 100,
@@ -45,7 +43,7 @@ func testUDPWrite(tun *Tunat, udpRx <-chan UDPData) {
 	buf := make([]byte, 100)
 
 	// ipv4
-	_, err := tun.WriteTo(&net.UDPAddr{
+	_, err := tunat.WriteTo(&net.UDPAddr{
 		IP:   []byte{10, 0, 0, 2},
 		Port: 100,
 	}, []byte("abcd"), &net.UDPAddr{
@@ -62,7 +60,7 @@ func testUDPWrite(tun *Tunat, udpRx <-chan UDPData) {
 	}
 
 	// ipv6
-	_, err = tun.WriteTo(&net.UDPAddr{
+	_, err = tunat.WriteTo(&net.UDPAddr{
 		IP:   net.ParseIP("fd::2"),
 		Port: 100,
 	}, []byte("abcd"), &net.UDPAddr{
@@ -79,7 +77,7 @@ func testUDPWrite(tun *Tunat, udpRx <-chan UDPData) {
 	}
 }
 
-func testUDPRead(tun *Tunat, udpRx <-chan UDPData) {
+func TestUDPRead(t *testing.T) {
 	udpListener, _ := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("[::]"),
 		Port: 100,
@@ -94,7 +92,7 @@ func testUDPRead(tun *Tunat, udpRx <-chan UDPData) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(<-udpRx)
+	fmt.Println(<-tunat.UDPRx)
 
 	// ipv6
 	_, err = udpListener.WriteTo([]byte("abcd"), &net.UDPAddr{
@@ -104,10 +102,10 @@ func testUDPRead(tun *Tunat, udpRx <-chan UDPData) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(<-udpRx)
+	fmt.Println(<-tunat.UDPRx)
 }
 
-func testTCP(tun *Tunat, udpRx <-chan UDPData) {
+func TestTCP(t *testing.T) {
 	tcpListener, _ := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("[::]"), Port: 100})
 	defer tcpListener.Close()
 
@@ -129,18 +127,18 @@ func testTCP(tun *Tunat, udpRx <-chan UDPData) {
 
 	for i := 0; i < 2; i++ {
 		conn, _ := tcpListener.Accept()
-		originSrcAddr, originDstAddr := tun.GetDst(conn.RemoteAddr().(*net.TCPAddr))
+		originSrcAddr, originDstAddr := tunat.GetSrcDst(conn.RemoteAddr().(*net.TCPAddr))
 		fmt.Printf("%v -> %v   %v -> %v\n", conn.RemoteAddr(), conn.LocalAddr(), originSrcAddr, originDstAddr)
 
 		// test map
 		conn.Close()
 		time.Sleep(10 * time.Millisecond)
-		tun.DelNat(conn.RemoteAddr().(*net.TCPAddr))
+		tunat.DelNat(conn.RemoteAddr().(*net.TCPAddr))
 	}
 
 	// test map
 	var flag uint32
-	tun.tcpMap.Range(func(key, value interface{}) bool {
+	tunat.tcpMap.Range(func(key, value interface{}) bool {
 		atomic.StoreUint32(&flag, 1)
 		fmt.Println(key.(string), value.(*tcpValue).natAddr, value.(*tcpValue).dstAddr)
 		return true
@@ -150,8 +148,8 @@ func testTCP(tun *Tunat, udpRx <-chan UDPData) {
 	}
 }
 
-func testSocketFile(tun *Tunat) {
-	tun.file.Close()
+func TestSocketFile(t *testing.T) {
+	tunat.file.Close()
 
 	socketFile := "/tmp/tunSocket"
 
