@@ -1,11 +1,14 @@
-package tunat
+package device
 
 import (
 	"errors"
+	"io"
 	"net"
 	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 type ifreq struct {
@@ -13,21 +16,27 @@ type ifreq struct {
 	ifrFlags uint16
 }
 
-// an issue https://github.com/golang/go/issues/30426#issuecomment-470335255
-func tunAlloc(name string) (*os.File, error) {
-	// open
-	fd, err := syscall.Open("/dev/net/tun", os.O_RDWR|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
+// New an issue https://github.com/golang/go/issues/30426#issuecomment-470335255
+func New(name string) (file io.ReadWriteCloser, err error) {
+	var tunPath string
+	if _, err = os.Stat("/dev/net/tun"); err == nil {
+		tunPath = "/dev/net/tun"
+	} else if _, err = os.Stat("/dev/tun"); err == nil {
+		tunPath = "/dev/tun"
+	} else {
+		return
 	}
 
-	// ifreq set name
+	fd, err := syscall.Open(tunPath, os.O_RDWR|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return
+	}
+
 	var req ifreq
 	copy(req.ifrName[:], []byte(name))
 	req.ifrFlags = syscall.IFF_TUN | syscall.IFF_NO_PI
 
-	// ioctl
-	_, _, errno := syscall.Syscall(
+	_, _, errno := unix.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(fd),
 		syscall.TUNSETIFF,
@@ -37,55 +46,54 @@ func tunAlloc(name string) (*os.File, error) {
 		return nil, errno
 	}
 
-	file := os.NewFile(uintptr(fd), "/dev/net/tun")
-	return file, nil
+	file = os.NewFile(uintptr(fd), tunPath)
+	return
 }
 
-// Basically for Android
-func readSocketFile(path string) (*os.File, error) {
-	// listen
+// NewFromUnixSocket basically for Android
+func NewFromUnixSocket(path string) (device *os.File, err error) {
 	unixListener, err := net.ListenUnix("unix", &net.UnixAddr{
 		Name: path,
 		Net:  "unix",
 	})
 	if err != nil {
-		return nil, err
+		return
 	}
 
-	// accept
 	unixConn, err := unixListener.AcceptUnix()
 	if err != nil {
-		return nil, err
+		return
 	}
 
-	// recvmsg
 	name := make([]byte, 256)
 	oob := make([]byte, syscall.CmsgSpace(4)) // fd length is 4
 	nameLen, oobLen, _, _, err := unixConn.ReadMsgUnix(name, oob)
 	if err != nil {
-		return nil, err
+		return
 	}
 
 	// parse msg
 	cmsgs, err := syscall.ParseSocketControlMessage(oob[:oobLen])
 	if err != nil {
-		return nil, err
+		return
 	}
 	if len(cmsgs) != 1 {
 		return nil, errors.New("the number of cmsgs is not 1")
 	}
 
-	// get fd
+	// get fd from msg
 	fds, err := syscall.ParseUnixRights(&cmsgs[0])
 	if err != nil {
-		return nil, err
+		return
 	}
 	if len(fds) != 1 {
 		return nil, errors.New("the number of fds is not 1")
 	}
 
-	// unlink
-	syscall.Unlink(path)
+	err = syscall.Unlink(path)
+	if err != nil {
+		return
+	}
 
 	file := os.NewFile(uintptr(fds[0]), string(name[:nameLen]))
 	return file, nil

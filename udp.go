@@ -1,81 +1,148 @@
 package tunat
 
 import (
-	"net"
+	"net/netip"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
-// WriteTo send udp data with tun
-func (t *Tunat) WriteTo(srcAddr *net.UDPAddr, payload []byte, dstAddr *net.UDPAddr) (int, error) {
-	// udpHeader
-	udpHeader := &layers.UDP{
-		SrcPort: layers.UDPPort(srcAddr.Port),
-		DstPort: layers.UDPPort(dstAddr.Port),
-	}
-
-	// ipHeader
-	var ipHeader gopacket.SerializableLayer
-	if len(srcAddr.IP) == 4 {
-		_ipHeader := layers.IPv4{
-			BaseLayer: layers.BaseLayer{},
-			Version:   4,
-			TTL:       64,
-			Protocol:  layers.IPProtocolUDP,
-			SrcIP:     srcAddr.IP,
-			DstIP:     dstAddr.IP,
-		}
-		udpHeader.SetNetworkLayerForChecksum(&_ipHeader)
-		ipHeader = &_ipHeader
-	} else {
-		_ipHeader := layers.IPv6{
-			Version:    6,
-			NextHeader: layers.IPProtocolUDP,
-			HopLimit:   64,
-			SrcIP:      srcAddr.IP,
-			DstIP:      dstAddr.IP,
-		}
-		udpHeader.SetNetworkLayerForChecksum(&_ipHeader)
-		ipHeader = &_ipHeader
-	}
-
-	// generate buf
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{
-		FixLengths:       true,
-		ComputeChecksums: true,
-	}
-	if err := gopacket.SerializeLayers(buf, opts,
-		ipHeader,
-		udpHeader,
-		gopacket.Payload(payload)); err != nil {
-		return 0, err
-	}
-
-	// write
-	return t.file.Write(buf.Bytes())
+type udpData struct {
+	payload []byte
+	saddr   netip.AddrPort
+	daddr   netip.AddrPort
 }
 
-func (t *Tunat) handleUDP(networkLayer gopacket.NetworkLayer, udpLayer *layers.UDP) {
-	t.udpTx <- UDPData{
-		SrcAddr: &net.UDPAddr{
-			IP:   networkLayer.NetworkFlow().Src().Raw(),
-			Port: int(udpLayer.SrcPort),
-			Zone: "",
-		},
-		Data: udpLayer.Payload,
-		DstAddr: &net.UDPAddr{
-			IP:   networkLayer.NetworkFlow().Dst().Raw(),
-			Port: int(udpLayer.DstPort),
-			Zone: "",
-		},
+// ReadFromUDPAddrPort like net package
+func (t *Tunat) ReadFromUDPAddrPort(payload []byte) (nread int, saddr, daddr netip.AddrPort, err error) {
+	udpData := <-t.udpChan
+	nread = copy(payload, udpData.payload)
+	return nread, udpData.saddr, udpData.daddr, nil
+}
+
+// WriteToUDPAddrPort like net package
+func (t *Tunat) WriteToUDPAddrPort(payload []byte, saddr, daddr netip.AddrPort) (nwrite int, err error) {
+	if saddr.Addr().Is4() {
+		return t.ipv4WriteTo(payload, saddr, daddr)
+	}
+	return t.ipv6WriteTo(payload, saddr, daddr)
+}
+
+func (t *Tunat) ipv4WriteTo(payload []byte, saddr, daddr netip.AddrPort) (nwrite int, err error) {
+	totalLen := header.IPv4MinimumSize + header.UDPMinimumSize + len(payload)
+	ipHeader := header.IPv4(
+		append(
+			make([]byte, totalLen-len(payload)),
+			payload...,
+		),
+	)
+	ipHeader.Encode(&header.IPv4Fields{
+		TotalLength: uint16(totalLen),
+		TTL:         64,
+		Protocol:    uint8(header.UDPProtocolNumber),
+		SrcAddr:     ipHeader.SourceAddress(),
+		DstAddr:     ipHeader.DestinationAddress(),
+	})
+	ipHeader.SetChecksum(0)
+	ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
+
+	udpHeader := header.UDP(ipHeader.Payload())
+	udpHeader.Encode(&header.UDPFields{
+		SrcPort: uint16(saddr.Port()),
+		DstPort: uint16(daddr.Port()),
+		Length:  uint16(header.UDPMinimumSize + len(payload)),
+	})
+	udpHeader.SetChecksum(0)
+	udpHeader.SetChecksum(
+		^udpHeader.CalculateChecksum(
+			header.Checksum(
+				udpHeader.Payload(),
+				header.PseudoHeaderChecksum(
+					header.UDPProtocolNumber,
+					ipHeader.SourceAddress(),
+					ipHeader.DestinationAddress(),
+					udpHeader.Length(),
+				),
+			),
+		),
+	)
+
+	return t.file.Write(ipHeader)
+}
+
+func (t *Tunat) ipv6WriteTo(payload []byte, saddr, daddr netip.AddrPort) (nwrite int, err error) {
+	totalLen := header.IPv6MinimumSize + header.UDPMinimumSize + len(payload)
+	ipHeader := header.IPv6(
+		append(
+			make([]byte, totalLen-len(payload)),
+			payload...,
+		),
+	)
+	ipHeader.Encode(&header.IPv6Fields{
+		PayloadLength:     uint16(header.UDPMinimumSize + len(payload)),
+		TransportProtocol: header.UDPProtocolNumber,
+		HopLimit:          64,
+		SrcAddr:           ipHeader.SourceAddress(),
+		DstAddr:           ipHeader.DestinationAddress(),
+	})
+
+	udpHeader := header.UDP(ipHeader.Payload())
+	udpHeader.Encode(&header.UDPFields{
+		SrcPort: uint16(saddr.Port()),
+		DstPort: uint16(daddr.Port()),
+		Length:  uint16(header.UDPMinimumSize + len(payload)),
+	})
+	udpHeader.SetChecksum(0)
+	udpHeader.SetChecksum(
+		^udpHeader.CalculateChecksum(
+			header.Checksum(
+				udpHeader.Payload(),
+				header.PseudoHeaderChecksum(
+					header.UDPProtocolNumber,
+					ipHeader.SourceAddress(),
+					ipHeader.DestinationAddress(),
+					udpHeader.Length(),
+				),
+			),
+		),
+	)
+
+	return t.file.Write(ipHeader)
+}
+
+func (t *Tunat) handleIPv4UDP(ipHeader header.IPv4, udpHeader header.UDP) {
+	ip, ok := netip.AddrFromSlice([]byte(ipHeader.SourceAddress()))
+	if !ok {
+		return
+	}
+	saddr := netip.AddrPortFrom(ip, udpHeader.SourcePort())
+	ip, ok = netip.AddrFromSlice([]byte(ipHeader.DestinationAddress()))
+	if !ok {
+		return
+	}
+	daddr := netip.AddrPortFrom(ip, udpHeader.DestinationPort())
+
+	t.udpChan <- udpData{
+		payload: append([]byte(nil), udpHeader.Payload()...),
+		saddr:   saddr,
+		daddr:   daddr,
 	}
 }
 
-// UDPData used in channel
-type UDPData struct {
-	SrcAddr *net.UDPAddr
-	Data    []byte
-	DstAddr *net.UDPAddr
+func (t *Tunat) handleIPv6UDP(ipHeader header.IPv6, udpHeader header.UDP) {
+	ip, ok := netip.AddrFromSlice([]byte(ipHeader.SourceAddress()))
+	if !ok {
+		return
+	}
+	saddr := netip.AddrPortFrom(ip, udpHeader.SourcePort())
+	ip, ok = netip.AddrFromSlice([]byte(ipHeader.DestinationAddress()))
+	if !ok {
+		return
+	}
+	daddr := netip.AddrPortFrom(ip, udpHeader.DestinationPort())
+
+	t.udpChan <- udpData{
+		payload: append([]byte(nil), udpHeader.Payload()...),
+		saddr:   saddr,
+		daddr:   daddr,
+	}
 }

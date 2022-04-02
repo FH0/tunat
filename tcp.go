@@ -1,160 +1,231 @@
 package tunat
 
 import (
+	"errors"
 	"net"
+	"net/netip"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
-func (t *Tunat) handleTCP(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) {
-	if tcpPacket := t.handleTCPPacket(networkLayer, tcp); tcpPacket != nil {
-		t.file.Write(tcpPacket)
-	}
+type tcpMapValue struct {
+	natAddr netip.AddrPort // fakeSAddr or originSAddr
+	daddr   netip.AddrPort
 }
 
-func (t *Tunat) handleTCPPacket(networkLayer gopacket.NetworkLayer, tcp *layers.TCP) []byte {
-	// modify
-	var ipHeader gopacket.SerializableLayer
-	switch _ipHeader := networkLayer.(type) {
-	case *layers.IPv4:
-		srcAddr := net.TCPAddr{
-			IP:   _ipHeader.SrcIP,
-			Port: int(tcp.SrcPort),
-		}
-		dstAddr := net.TCPAddr{
-			IP:   _ipHeader.DstIP,
-			Port: int(tcp.DstPort),
-		}
-
-		// syn
-		if tcp.SYN && !tcp.ACK {
-			if _, ok := t.tcpMap.Load(srcAddr.String()); !ok {
-				i := 1
-				for ; i < 65536; i++ {
-					natAddr := net.TCPAddr{IP: t.fakeSrcAddr4, Port: i}
-					if _, ok := t.tcpMap.Load(natAddr.String()); !ok {
-						t.tcpMap.Store(natAddr.String(), &tcpValue{natAddr: srcAddr, dstAddr: &dstAddr})
-						t.tcpMap.Store(srcAddr.String(), &tcpValue{natAddr: natAddr, dstAddr: &dstAddr})
-						break
-					}
-				}
-				if i == 65536 {
-					return nil // FIXEME
-				}
-			}
-		}
-
-		/*
-			tcpRedirect4 10.0.0.1:100
-			raw        10.0.0.1:1234 -> 1.2.3.4:4321    SYN
-			modified   10.0.0.2:1    -> 10.0.0.1:100    SYN
-			raw        10.0.0.1:100  -> 10.0.0.2:1      ACK SYN
-			modified   1.2.3.4:4321  -> 10.0.0.1:1234   ACK SYN
-			raw        10.0.0.1:1234 -> 1.2.3.4:4321    ACK
-			modified   10.0.0.2:1    -> 10.0.0.1:100    ACK
-		*/
-		if value, ok := t.tcpMap.Load(srcAddr.String()); ok {
-			_ipHeader.SrcIP = value.(*tcpValue).natAddr.IP
-			_ipHeader.DstIP = t.tcpRedirect4.IP
-			tcp.SrcPort = layers.TCPPort(value.(*tcpValue).natAddr.Port)
-			tcp.DstPort = layers.TCPPort(t.tcpRedirect4.Port)
-		} else if value, ok := t.tcpMap.Load(dstAddr.String()); ok {
-			_ipHeader.SrcIP = value.(*tcpValue).dstAddr.IP
-			_ipHeader.DstIP = value.(*tcpValue).natAddr.IP
-			tcp.SrcPort = layers.TCPPort(value.(*tcpValue).dstAddr.Port)
-			tcp.DstPort = layers.TCPPort(value.(*tcpValue).natAddr.Port)
-		} else {
-			return nil
-		}
-
-		tcp.SetNetworkLayerForChecksum(_ipHeader)
-		ipHeader = _ipHeader
-	case *layers.IPv6:
-		srcAddr := net.TCPAddr{
-			IP:   _ipHeader.SrcIP,
-			Port: int(tcp.SrcPort),
-		}
-		dstAddr := net.TCPAddr{
-			IP:   _ipHeader.DstIP,
-			Port: int(tcp.DstPort),
-		}
-
-		// syn
-		if tcp.SYN && !tcp.ACK {
-			if _, ok := t.tcpMap.Load(srcAddr.String()); !ok {
-				i := 1
-				for ; i < 65536; i++ {
-					natAddr := net.TCPAddr{IP: t.fakeSrcAddr6, Port: i}
-					if _, ok := t.tcpMap.Load(natAddr.String()); !ok {
-						t.tcpMap.Store(natAddr.String(), &tcpValue{natAddr: srcAddr, dstAddr: &dstAddr})
-						t.tcpMap.Store(srcAddr.String(), &tcpValue{natAddr: natAddr, dstAddr: &dstAddr})
-						break
-					}
-				}
-				if i == 65536 {
-					return nil // FIXEME
-				}
-			}
-		}
-
-		if value, ok := t.tcpMap.Load(srcAddr.String()); ok {
-			_ipHeader.SrcIP = value.(*tcpValue).natAddr.IP
-			_ipHeader.DstIP = t.tcpRedirect6.IP
-			tcp.SrcPort = layers.TCPPort(value.(*tcpValue).natAddr.Port)
-			tcp.DstPort = layers.TCPPort(t.tcpRedirect6.Port)
-		} else if value, ok := t.tcpMap.Load(dstAddr.String()); ok {
-			_ipHeader.SrcIP = value.(*tcpValue).dstAddr.IP
-			_ipHeader.DstIP = value.(*tcpValue).natAddr.IP
-			tcp.SrcPort = layers.TCPPort(value.(*tcpValue).dstAddr.Port)
-			tcp.DstPort = layers.TCPPort(value.(*tcpValue).natAddr.Port)
-		} else {
-			return nil
-		}
-
-		tcp.SetNetworkLayerForChecksum(_ipHeader)
-		ipHeader = _ipHeader
-	default:
-		panic("TCP is either ipv4 or ipv6.")
-	}
-
-	// generate buf
-	buf := gopacket.NewSerializeBuffer()
-	opts := gopacket.SerializeOptions{
-		ComputeChecksums: true,
-	}
-	gopacket.SerializeLayers(buf,
-		opts,
-		ipHeader,
-		tcp,
-		gopacket.Payload(tcp.Payload))
-
-	return buf.Bytes()
+type tcpConn struct {
+	net.Conn
+	tunat          *Tunat
+	saddr          netip.AddrPort
+	daddr          netip.AddrPort
+	saddrInterface net.Addr
+	daddrInterface net.Addr
 }
 
-type tcpValue struct {
-	natAddr net.TCPAddr // fakeSrcAddr or originSrcAddr
-	dstAddr *net.TCPAddr
-}
-
-// GetSrcDst return address associated
-func (t *Tunat) GetSrcDst(addr *net.TCPAddr) (*net.TCPAddr, *net.TCPAddr) {
-	if value, ok := t.tcpMap.Load(addr.String()); ok {
-		return &value.(*tcpValue).natAddr, value.(*tcpValue).dstAddr
+// Close delete nat map at the same time
+func (tc *tcpConn) Close() error {
+	if value, ok := tc.tunat.tcpMap.Load(tc.saddr); ok {
+		tc.tunat.tcpMap.Delete(value.(*tcpMapValue).natAddr)
+		tc.tunat.tcpMap.Delete(tc.saddr)
 	}
 
-	return nil, nil
+	return tc.Conn.Close()
 }
 
-// DelNat delete address from map
-func (t *Tunat) DelNat(addr *net.TCPAddr) {
-	var natAddr *net.TCPAddr
-	if value, ok := t.tcpMap.Load(addr.String()); ok {
-		natAddr = &value.(*tcpValue).natAddr
+// LocalAddr original destination address
+func (tc *tcpConn) LocalAddr() net.Addr {
+	return tc.daddrInterface
+}
+
+// RemoteAddr original source address
+func (tc *tcpConn) RemoteAddr() net.Addr {
+	return tc.saddrInterface
+}
+
+// IPv4Accept like net package
+func (t *Tunat) IPv4Accept() (conn net.Conn, err error) {
+	acceptConn, err := t.ipv4TCPListener.Accept()
+	if err != nil {
+		return
+	}
+
+	value, ok := t.tcpMap.Load(acceptConn.RemoteAddr().(*net.TCPAddr).AddrPort())
+	if !ok {
+		return nil, errors.New("tcp nat map not exist")
+	}
+	saddr := value.(*tcpMapValue).natAddr
+	daddr := value.(*tcpMapValue).daddr
+	conn = &tcpConn{
+		Conn:           acceptConn,
+		tunat:          t,
+		saddr:          saddr,
+		daddr:          daddr,
+		saddrInterface: net.TCPAddrFromAddrPort(saddr),
+		daddrInterface: net.TCPAddrFromAddrPort(daddr),
+	}
+	return
+}
+
+// IPv6Accept like net package
+func (t *Tunat) IPv6Accept() (conn net.Conn, err error) {
+	acceptConn, err := t.ipv6TCPListener.Accept()
+	if err != nil {
+		return
+	}
+
+	value, ok := t.tcpMap.Load(acceptConn.RemoteAddr().(*net.TCPAddr).AddrPort())
+	if !ok {
+		return nil, errors.New("tcp nat map not exist")
+	}
+	saddr := value.(*tcpMapValue).natAddr
+	daddr := value.(*tcpMapValue).daddr
+	conn = &tcpConn{
+		Conn:           acceptConn,
+		tunat:          t,
+		saddr:          saddr,
+		daddr:          daddr,
+		saddrInterface: net.TCPAddrFromAddrPort(saddr),
+		daddrInterface: net.TCPAddrFromAddrPort(daddr),
+	}
+	return
+}
+
+func (t *Tunat) handleIPv4TCP(ipHeader header.IPv4, tcpHeader header.TCP) {
+	/*
+		ipv4TCPListener	10.0.0.1:100
+		raw				10.0.0.1:1234	->	1.2.3.4:4321	SYN
+		modified		10.0.0.2:1234	->	10.0.0.1:100	SYN
+		raw				10.0.0.1:100	->	10.0.0.2:1234	ACK SYN
+		modified		1.2.3.4:4321	->	10.0.0.1:1234	ACK SYN
+		raw				10.0.0.1:1234	->	1.2.3.4:4321	ACK
+		modified		10.0.0.2:1234	->	10.0.0.1:100	ACK
+	*/
+	ip, ok := netip.AddrFromSlice([]byte(ipHeader.SourceAddress()))
+	if !ok {
+		return
+	}
+	saddr := netip.AddrPortFrom(ip, tcpHeader.SourcePort())
+	ip, ok = netip.AddrFromSlice([]byte(ipHeader.DestinationAddress()))
+	if !ok {
+		return
+	}
+	daddr := netip.AddrPortFrom(ip, tcpHeader.DestinationPort())
+
+	if tcpHeader.Flags()&header.TCPFlagSyn == 0 || tcpHeader.Flags()&header.TCPFlagAck != 0 {
+		goto next
+	}
+	if _, ok := t.tcpMap.Load(saddr); ok {
+		goto next
+	}
+	for port, endPort := tcpHeader.SourcePort(), tcpHeader.SourcePort()-1; port != endPort; port++ {
+		if port == 0 {
+			continue
+		}
+		fakeAddr := netip.AddrPortFrom(t.fakeIPv4Addr, port)
+		if _, ok := t.tcpMap.Load(fakeAddr); !ok {
+			t.tcpMap.Store(fakeAddr, &tcpMapValue{natAddr: saddr, daddr: daddr})
+			t.tcpMap.Store(saddr, &tcpMapValue{natAddr: fakeAddr, daddr: daddr})
+			goto next
+		}
+	}
+	return
+
+next:
+	if value, ok := t.tcpMap.Load(saddr); ok {
+		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
+		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv4TCPListener.Addr().(*net.TCPAddr).IP))
+		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).natAddr.Port()))
+		tcpHeader.SetDestinationPort(uint16(t.ipv4TCPListener.Addr().(*net.TCPAddr).Port))
+	} else if value, ok := t.tcpMap.Load(daddr); ok {
+		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).daddr.Addr().AsSlice()))
+		ipHeader.SetDestinationAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
+		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).daddr.Port()))
+		tcpHeader.SetDestinationPort(uint16(value.(*tcpMapValue).natAddr.Port()))
 	} else {
 		return
 	}
 
-	t.tcpMap.Delete(natAddr.String())
-	t.tcpMap.Delete(addr.String())
+	ipHeader.SetChecksum(0)
+	ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
+	tcpHeader.SetChecksum(0)
+	tcpHeader.SetChecksum(
+		^tcpHeader.CalculateChecksum(
+			header.Checksum(
+				tcpHeader.Payload(),
+				header.PseudoHeaderChecksum(
+					header.TCPProtocolNumber,
+					ipHeader.SourceAddress(),
+					ipHeader.DestinationAddress(),
+					uint16(len(tcpHeader)),
+				),
+			),
+		),
+	)
+
+	_, _ = t.file.Write(ipHeader)
+}
+
+func (t *Tunat) handleIPv6TCP(ipHeader header.IPv6, tcpHeader header.TCP) {
+	ip, ok := netip.AddrFromSlice([]byte(ipHeader.SourceAddress()))
+	if !ok {
+		return
+	}
+	saddr := netip.AddrPortFrom(ip, tcpHeader.SourcePort())
+	ip, ok = netip.AddrFromSlice([]byte(ipHeader.DestinationAddress()))
+	if !ok {
+		return
+	}
+	daddr := netip.AddrPortFrom(ip, tcpHeader.DestinationPort())
+
+	if tcpHeader.Flags()&header.TCPFlagSyn == 0 || tcpHeader.Flags()&header.TCPFlagAck != 0 {
+		goto next
+	}
+	if _, ok := t.tcpMap.Load(saddr); ok {
+		goto next
+	}
+	for port, endPort := tcpHeader.SourcePort(), tcpHeader.SourcePort()-1; port != endPort; port++ {
+		if port == 0 {
+			continue
+		}
+		fakeAddr := netip.AddrPortFrom(t.fakeIPv6Addr, port)
+		if _, ok := t.tcpMap.Load(fakeAddr); !ok {
+			t.tcpMap.Store(fakeAddr, &tcpMapValue{natAddr: saddr, daddr: daddr})
+			t.tcpMap.Store(saddr, &tcpMapValue{natAddr: fakeAddr, daddr: daddr})
+			goto next
+		}
+	}
+	return
+
+next:
+	if value, ok := t.tcpMap.Load(saddr); ok {
+		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
+		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv6TCPListener.Addr().(*net.TCPAddr).IP))
+		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).natAddr.Port()))
+		tcpHeader.SetDestinationPort(uint16(t.ipv6TCPListener.Addr().(*net.TCPAddr).Port))
+	} else if value, ok := t.tcpMap.Load(daddr); ok {
+		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).daddr.Addr().AsSlice()))
+		ipHeader.SetDestinationAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
+		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).daddr.Port()))
+		tcpHeader.SetDestinationPort(uint16(value.(*tcpMapValue).natAddr.Port()))
+	} else {
+		return
+	}
+
+	tcpHeader.SetChecksum(0)
+	tcpHeader.SetChecksum(
+		^tcpHeader.CalculateChecksum(
+			header.Checksum(
+				tcpHeader.Payload(),
+				header.PseudoHeaderChecksum(
+					header.TCPProtocolNumber,
+					ipHeader.SourceAddress(),
+					ipHeader.DestinationAddress(),
+					uint16(len(tcpHeader)),
+				),
+			),
+		),
+	)
+
+	_, _ = t.file.Write(ipHeader)
 }
