@@ -27,7 +27,13 @@ func (d *device) Read(buf []byte) (int, error) {
 			d.session.ReleaseReceivePacket(packet)
 			return nread, err
 		case windows.ERROR_NO_MORE_ITEMS:
-			windows.WaitForSingleObject(d.readWaitEvent, windows.INFINITE)
+			event, err := windows.WaitForSingleObject(d.readWaitEvent, windows.INFINITE)
+			if err != nil {
+				return 0, err
+			}
+			if event != windows.WAIT_OBJECT_0 {
+				return 0, errors.New("event != windows.WAIT_OBJECT_0")
+			}
 		case windows.ERROR_HANDLE_EOF:
 			return 0, os.ErrClosed
 		case windows.ERROR_INVALID_DATA:
@@ -78,7 +84,7 @@ func New(name string) (file io.ReadWriteCloser, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("Error creating interface: %w", err)
 	}
-	device.session, err = device.adapter.StartSession(1500 * 1000)
+	device.session, err = device.adapter.StartSession(0x800000)
 	if err != nil {
 		device.adapter.Close()
 		return

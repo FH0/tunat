@@ -2,7 +2,6 @@ package device
 
 import (
 	"errors"
-	"io"
 	"net"
 	"os"
 	"syscall"
@@ -17,7 +16,7 @@ type ifreq struct {
 }
 
 // New an issue https://github.com/golang/go/issues/30426#issuecomment-470335255
-func New(name string) (file io.ReadWriteCloser, err error) {
+func New(name string) (file *os.File, err error) {
 	var tunPath string
 	if _, err = os.Stat("/dev/net/tun"); err == nil {
 		tunPath = "/dev/net/tun"
@@ -51,7 +50,7 @@ func New(name string) (file io.ReadWriteCloser, err error) {
 }
 
 // NewFromUnixSocket basically for Android
-func NewFromUnixSocket(path string) (device *os.File, err error) {
+func NewFromUnixSocket(path string) (_ *os.File, err error) {
 	unixListener, err := net.ListenUnix("unix", &net.UnixAddr{
 		Name: path,
 		Net:  "unix",

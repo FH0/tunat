@@ -3,6 +3,7 @@ package tunat
 import (
 	"net/netip"
 
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
@@ -39,8 +40,8 @@ func (t *Tunat) ipv4WriteTo(payload []byte, saddr, daddr netip.AddrPort) (nwrite
 		TotalLength: uint16(totalLen),
 		TTL:         64,
 		Protocol:    uint8(header.UDPProtocolNumber),
-		SrcAddr:     ipHeader.SourceAddress(),
-		DstAddr:     ipHeader.DestinationAddress(),
+		SrcAddr:     tcpip.Address(saddr.Addr().AsSlice()),
+		DstAddr:     tcpip.Address(daddr.Addr().AsSlice()),
 	})
 	ipHeader.SetChecksum(0)
 	ipHeader.SetChecksum(^ipHeader.CalculateChecksum())
@@ -81,8 +82,8 @@ func (t *Tunat) ipv6WriteTo(payload []byte, saddr, daddr netip.AddrPort) (nwrite
 		PayloadLength:     uint16(header.UDPMinimumSize + len(payload)),
 		TransportProtocol: header.UDPProtocolNumber,
 		HopLimit:          64,
-		SrcAddr:           ipHeader.SourceAddress(),
-		DstAddr:           ipHeader.DestinationAddress(),
+		SrcAddr:           tcpip.Address(saddr.Addr().AsSlice()),
+		DstAddr:           tcpip.Address(daddr.Addr().AsSlice()),
 	})
 
 	udpHeader := header.UDP(ipHeader.Payload())

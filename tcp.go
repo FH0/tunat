@@ -43,38 +43,18 @@ func (tc *tcpConn) RemoteAddr() net.Addr {
 	return tc.saddrInterface
 }
 
-// IPv4Accept like net package
-func (t *Tunat) IPv4Accept() (conn net.Conn, err error) {
-	acceptConn, err := t.ipv4TCPListener.Accept()
+// Accept like net package
+func (t *Tunat) Accept() (conn net.Conn, err error) {
+	acceptConn, err := t.tcpListener.Accept()
 	if err != nil {
 		return
 	}
 
-	value, ok := t.tcpMap.Load(acceptConn.RemoteAddr().(*net.TCPAddr).AddrPort())
-	if !ok {
-		return nil, errors.New("tcp nat map not exist")
+	connRemoteAddr := acceptConn.RemoteAddr().(*net.TCPAddr).AddrPort()
+	if connRemoteAddr.Addr().Is4In6() {
+		connRemoteAddr = netip.AddrPortFrom(connRemoteAddr.Addr().Unmap(), connRemoteAddr.Port())
 	}
-	saddr := value.(*tcpMapValue).natAddr
-	daddr := value.(*tcpMapValue).daddr
-	conn = &tcpConn{
-		Conn:           acceptConn,
-		tunat:          t,
-		saddr:          saddr,
-		daddr:          daddr,
-		saddrInterface: net.TCPAddrFromAddrPort(saddr),
-		daddrInterface: net.TCPAddrFromAddrPort(daddr),
-	}
-	return
-}
-
-// IPv6Accept like net package
-func (t *Tunat) IPv6Accept() (conn net.Conn, err error) {
-	acceptConn, err := t.ipv6TCPListener.Accept()
-	if err != nil {
-		return
-	}
-
-	value, ok := t.tcpMap.Load(acceptConn.RemoteAddr().(*net.TCPAddr).AddrPort())
+	value, ok := t.tcpMap.Load(connRemoteAddr)
 	if !ok {
 		return nil, errors.New("tcp nat map not exist")
 	}
@@ -93,13 +73,13 @@ func (t *Tunat) IPv6Accept() (conn net.Conn, err error) {
 
 func (t *Tunat) handleIPv4TCP(ipHeader header.IPv4, tcpHeader header.TCP) {
 	/*
-		ipv4TCPListener	10.0.0.1:100
-		raw				10.0.0.1:1234	->	1.2.3.4:4321	SYN
-		modified		10.0.0.2:1234	->	10.0.0.1:100	SYN
-		raw				10.0.0.1:100	->	10.0.0.2:1234	ACK SYN
-		modified		1.2.3.4:4321	->	10.0.0.1:1234	ACK SYN
-		raw				10.0.0.1:1234	->	1.2.3.4:4321	ACK
-		modified		10.0.0.2:1234	->	10.0.0.1:100	ACK
+		tcpListener	10.0.0.1:100
+		raw			10.0.0.1:1234	->	1.2.3.4:4321	SYN
+		modified	10.0.0.2:1234	->	10.0.0.1:100	SYN
+		raw			10.0.0.1:100	->	10.0.0.2:1234	ACK SYN
+		modified	1.2.3.4:4321	->	10.0.0.1:1234	ACK SYN
+		raw			10.0.0.1:1234	->	1.2.3.4:4321	ACK
+		modified	10.0.0.2:1234	->	10.0.0.1:100	ACK
 	*/
 	ip, ok := netip.AddrFromSlice([]byte(ipHeader.SourceAddress()))
 	if !ok {
@@ -134,9 +114,9 @@ func (t *Tunat) handleIPv4TCP(ipHeader header.IPv4, tcpHeader header.TCP) {
 next:
 	if value, ok := t.tcpMap.Load(saddr); ok {
 		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
-		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv4TCPListener.Addr().(*net.TCPAddr).IP))
+		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv4TCPListenerAddrPort.Addr().AsSlice()))
 		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).natAddr.Port()))
-		tcpHeader.SetDestinationPort(uint16(t.ipv4TCPListener.Addr().(*net.TCPAddr).Port))
+		tcpHeader.SetDestinationPort(uint16(t.ipv4TCPListenerAddrPort.Port()))
 	} else if value, ok := t.tcpMap.Load(daddr); ok {
 		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).daddr.Addr().AsSlice()))
 		ipHeader.SetDestinationAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
@@ -200,9 +180,9 @@ func (t *Tunat) handleIPv6TCP(ipHeader header.IPv6, tcpHeader header.TCP) {
 next:
 	if value, ok := t.tcpMap.Load(saddr); ok {
 		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
-		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv6TCPListener.Addr().(*net.TCPAddr).IP))
+		ipHeader.SetDestinationAddress(tcpip.Address(t.ipv6TCPListenerAddrPort.Addr().AsSlice()))
 		tcpHeader.SetSourcePort(uint16(value.(*tcpMapValue).natAddr.Port()))
-		tcpHeader.SetDestinationPort(uint16(t.ipv6TCPListener.Addr().(*net.TCPAddr).Port))
+		tcpHeader.SetDestinationPort(uint16(t.ipv6TCPListenerAddrPort.Port()))
 	} else if value, ok := t.tcpMap.Load(daddr); ok {
 		ipHeader.SetSourceAddress(tcpip.Address(value.(*tcpMapValue).daddr.Addr().AsSlice()))
 		ipHeader.SetDestinationAddress(tcpip.Address(value.(*tcpMapValue).natAddr.Addr().AsSlice()))
