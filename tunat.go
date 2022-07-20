@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/FH0/tunat/device"
@@ -121,18 +120,8 @@ func (t *Tunat) start() {
 
 func excuteCommands(commands []string) (err error) {
 	for _, cmd := range commands {
-		cmdSlice := strings.Split(cmd, " ")
-		var out []byte
-		switch len(cmdSlice) {
-		case 0:
-			return errors.New("invalid command")
-		case 1:
-			out, err = exec.Command(cmdSlice[0]).CombinedOutput()
-		default:
-			out, err = exec.Command(cmdSlice[0], cmdSlice[1:]...).CombinedOutput()
-		}
+		err = exec.Command("bash", "-c", cmd).Run()
 		if err != nil {
-			err = fmt.Errorf("%v: %v", string(out), err.Error())
 			return
 		}
 	}
